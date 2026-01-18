@@ -2,7 +2,6 @@ import asyncio
 import os
 import signal
 import sys
-from dotenv import load_dotenv
 
 # Add Telegram-Forwarder-Bot to path
 bot_dir = os.path.join(os.path.dirname(__file__), 'Telegram-Forwarder-Bot')
@@ -16,7 +15,6 @@ from source.utils.Console import Terminal
 from source.utils.Constants import SESSION_FOLDER_PATH, RESOURCE_FILE_PATH, MEDIA_FOLDER_PATH
 
 console = Terminal.console
-load_dotenv()
 
 async def shutdown(loop, signal=None):
     if signal:
