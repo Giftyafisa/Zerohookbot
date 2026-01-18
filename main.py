@@ -3,12 +3,15 @@ import os
 import signal
 import sys
 
-# Add Telegram-Forwarder-Bot to path
-bot_dir = os.path.join(os.path.dirname(__file__), 'Telegram-Forwarder-Bot')
-sys.path.insert(0, bot_dir)
+# Get absolute path to bot directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+bot_dir = os.path.join(script_dir, 'Telegram-Forwarder-Bot')
 
-# Change to bot directory for relative paths to work
+# Change to bot directory first
 os.chdir(bot_dir)
+
+# Add to path
+sys.path.insert(0, bot_dir)
 
 from source.core.Bot import Bot
 from source.utils.Console import Terminal
