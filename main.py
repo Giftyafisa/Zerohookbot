@@ -5,11 +5,15 @@ import sys
 from dotenv import load_dotenv
 
 # Add Telegram-Forwarder-Bot to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Telegram-Forwarder-Bot'))
+bot_dir = os.path.join(os.path.dirname(__file__), 'Telegram-Forwarder-Bot')
+sys.path.insert(0, bot_dir)
 
-from Telegram-Forwarder-Bot.source.core.Bot import Bot
-from Telegram-Forwarder-Bot.source.utils.Console import Terminal
-from Telegram-Forwarder-Bot.source.utils.Constants import SESSION_FOLDER_PATH, RESOURCE_FILE_PATH, MEDIA_FOLDER_PATH
+# Change to bot directory for relative paths to work
+os.chdir(bot_dir)
+
+from source.core.Bot import Bot
+from source.utils.Console import Terminal
+from source.utils.Constants import SESSION_FOLDER_PATH, RESOURCE_FILE_PATH, MEDIA_FOLDER_PATH
 
 console = Terminal.console
 load_dotenv()
