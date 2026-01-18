@@ -2,13 +2,20 @@
 
 ## Build Command:
 ```
-pip install -r requirements.txt && mkdir -p Telegram-Forwarder-Bot/resources Telegram-Forwarder-Bot/sessions Telegram-Forwarder-Bot/media
+pip install -r requirements.txt && pip install -r Telegram-Forwarder-Bot/requirements.txt && mkdir -p Telegram-Forwarder-Bot/resources Telegram-Forwarder-Bot/sessions Telegram-Forwarder-Bot/media
 ```
 
 ## Start Command:
 ```
-python3 Telegram-Forwarder-Bot/main.py
+cd Telegram-Forwarder-Bot && python3 run_bot.py
 ```
+
+## How It Works:
+1. First deploy shows a **web authentication page**
+2. Open your Render URL (e.g., https://zerohookbot.onrender.com)
+3. Enter your phone number → Get OTP on Telegram → Enter OTP
+4. If you have 2FA, enter your cloud password
+5. Session is saved, bot starts automatically on next restart
 
 ## Environment Variables (Add in Render Dashboard):
 - `TG_BOT_TOKEN`: Your bot token from @BotFather
