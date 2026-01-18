@@ -7,7 +7,7 @@ pip install -r requirements.txt && mkdir -p Telegram-Forwarder-Bot/resources Tel
 
 ## Start Command:
 ```
-python3 main.py
+python3 Telegram-Forwarder-Bot/main.py
 ```
 
 ## Environment Variables (Add in Render Dashboard):
