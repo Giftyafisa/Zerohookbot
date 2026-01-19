@@ -427,6 +427,18 @@ async def async_post_to_channels(session_file, channel_ids, content_item):
 # Pending content - waiting to be assigned to a group
 pending_content = {}  # user_id -> {'file_path': path, 'caption': str}
 
+def safe_reply(bot, message, text, **kwargs):
+    """Safely reply to a message, handling cases where message is deleted"""
+    try:
+        return bot.reply_to(message, text, **kwargs)
+    except Exception as e:
+        # If reply fails, try sending without reply
+        try:
+            return bot.send_message(message.chat.id, text, **kwargs)
+        except:
+            logger.error(f"Failed to send message: {e}")
+            return None
+
 def start_bot_receiver():
     """Start the bot receiver for accepting photos"""
     global bot_running
@@ -543,7 +555,7 @@ def start_bot_receiver():
 💾 Storage: {db_status}
 
 🌐 Manage at: https://zerohookbot.onrender.com"""
-                bot.reply_to(message, text, parse_mode='Markdown')
+                safe_reply(bot, message, text, parse_mode='Markdown')
             
             @bot.message_handler(commands=['addtext'])
             def add_text_cmd(message):
@@ -553,7 +565,7 @@ def start_bot_receiver():
                 
                 parts = message.text.split(maxsplit=2)
                 if len(parts) < 3:
-                    bot.reply_to(message, "❌ Usage: /addtext GROUP\\_ID Your text or URL here", parse_mode='Markdown')
+                    safe_reply(bot, message, "❌ Usage: /addtext GROUP\\_ID Your text or URL here", parse_mode='Markdown')
                     return
                 
                 group_id = parts[1]
@@ -735,11 +747,14 @@ def start_bot_receiver():
             @bot.message_handler(func=lambda m: True)
             def other(message):
                 if is_owner(message):
-                    bot.reply_to(message, "📸 Send photo, video, or text!\n/help for commands")
+                    try:
+                        bot.reply_to(message, "📸 Send photo, video, or text!\n/help for commands")
+                    except: pass
             
             bot_running = True
             logger.info("🤖 Bot receiver started!")
-            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+            # skip_pending=True ignores old messages from before restart
+            bot.infinity_polling(timeout=60, long_polling_timeout=30, skip_pending=True)
         except Exception as e:
             logger.error(f"Bot error: {e}")
             bot_running = False
