@@ -25,7 +25,6 @@ load_dotenv()
 # ============== DATABASE CONFIG ==============
 # MongoDB connection
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://zerohookbot:11221122@zerohookbot.xtq3cj7.mongodb.net/?appName=zerohookbot')
-USE_MONGO = True
 
 mongo_client = None
 mongo_db = None
@@ -36,13 +35,21 @@ def get_mongo_db():
     if mongo_db is None:
         try:
             from pymongo import MongoClient
-            mongo_client = MongoClient(MONGO_URI)
+            # Add SSL/TLS options for Atlas
+            mongo_client = MongoClient(
+                MONGO_URI,
+                tls=True,
+                tlsAllowInvalidCertificates=True,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000
+            )
             mongo_db = mongo_client['zerohookbot']
             # Test connection
             mongo_client.admin.command('ping')
             logger.info("✅ MongoDB connected!")
         except Exception as e:
             logger.error(f"MongoDB connection error: {e}")
+            logger.info("MongoDB not available, using local files")
             return None
     return mongo_db
 
@@ -128,7 +135,7 @@ def load_config():
     }
     
     db = get_mongo_db()
-    if db:
+    if db is not None:
         try:
             doc = db.config.find_one({'key': 'main'})
             if doc and 'value' in doc:
@@ -144,7 +151,7 @@ def load_config():
 
 def save_config(config):
     db = get_mongo_db()
-    if db:
+    if db is not None:
         try:
             db.config.update_one(
                 {'key': 'main'},
@@ -180,7 +187,7 @@ Content Group Structure:
 def load_groups():
     """Load content groups from database or file"""
     db = get_mongo_db()
-    if db:
+    if db is not None:
         try:
             docs = list(db.content_groups.find({}, {'_id': 0}))
             return [doc['data'] for doc in docs if 'data' in doc]
@@ -198,7 +205,7 @@ def load_groups():
 def save_groups(groups):
     """Save content groups to database or file"""
     db = get_mongo_db()
-    if db:
+    if db is not None:
         try:
             # Delete all and reinsert
             db.content_groups.delete_many({})
