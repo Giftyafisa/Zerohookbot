@@ -531,7 +531,7 @@ def start_bot_receiver():
                 total_content = sum(len(g['content']) for g in groups)
                 total_channels = len(set(ch for g in groups for ch in g['channels']))
                 
-                db_status = "🟢 MongoDB" if get_mongo_db() else "📁 JSON files"
+                db_status = "🟢 MongoDB" if get_mongo_db() is not None else "📁 JSON files"
                 
                 text = f"""📊 *Bot Status*
 
@@ -1455,7 +1455,7 @@ def settings():
         <div class="grid">
             <div class="stat"><h4>{'🟢' if scheduler_running else '🔴'}</h4><p>Scheduler</p></div>
             <div class="stat"><h4>{'🟢' if bot_running else '🔴'}</h4><p>Bot</p></div>
-            <div class="stat"><h4>{'🟢 MongoDB' if get_mongo_db() else '📁 JSON'}</h4><p>Storage</p></div>
+            <div class="stat"><h4>{'🟢 MongoDB' if get_mongo_db() is not None else '📁 JSON'}</h4><p>Storage</p></div>
         </div>
     </div>
     '''
@@ -1501,5 +1501,5 @@ if __name__ == '__main__':
     start_services()
     port = int(os.getenv('PORT', 10000))
     logger.info(f"🌐 http://localhost:{port}")
-    logger.info(f"💾 Storage: {'MongoDB' if get_mongo_db() else 'JSON files'}")
+    logger.info(f"💾 Storage: {'MongoDB' if get_mongo_db() is not None else 'JSON files'}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
