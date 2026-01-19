@@ -1,6 +1,7 @@
 """
 Zerohook Bot - Content Groups System
 Post different content to different channel groups with scheduling
+Supports: Images, Videos, Text, URLs
 """
 import os
 import json
@@ -9,6 +10,8 @@ import threading
 import time
 import logging
 import uuid
+import requests
+import base64
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify
 from telethon import TelegramClient
@@ -19,11 +22,38 @@ from tinydb import TinyDB, Query
 
 load_dotenv()
 
+# ============== DATABASE CONFIG ==============
+# MongoDB connection
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://zerohookbot:11221122@zerohookbot.xtq3cj7.mongodb.net/?appName=zerohookbot')
+USE_MONGO = True
+
+mongo_client = None
+mongo_db = None
+
+def get_mongo_db():
+    """Get MongoDB database connection"""
+    global mongo_client, mongo_db
+    if mongo_db is None:
+        try:
+            from pymongo import MongoClient
+            mongo_client = MongoClient(MONGO_URI)
+            mongo_db = mongo_client['zerohookbot']
+            # Test connection
+            mongo_client.admin.command('ping')
+            logger.info("✅ MongoDB connected!")
+        except Exception as e:
+            logger.error(f"MongoDB connection error: {e}")
+            return None
+    return mongo_db
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+# App URL for keep-alive ping
+APP_URL = os.getenv('RENDER_EXTERNAL_URL', 'https://zerohookbot.onrender.com')
 
 # Credentials
 API_ID = int(os.getenv('TG_API_ID', '32685245'))
@@ -71,6 +101,23 @@ def run_async(coro):
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=120)
 
+# ============== DATABASE FUNCTIONS ==============
+def init_database():
+    """Initialize MongoDB collections"""
+    db = get_mongo_db()
+    if db is None:
+        logger.warning("MongoDB not available, using local files")
+        return
+    
+    # Create indexes for better performance
+    try:
+        db.config.create_index("key", unique=True)
+        db.content_groups.create_index("id", unique=True)
+        db.channels.create_index("id", unique=True)
+        logger.info("✅ MongoDB indexes created")
+    except Exception as e:
+        logger.error(f"Index creation error: {e}")
+
 # ============== CONFIG ==============
 def load_config():
     defaults = {
@@ -79,7 +126,16 @@ def load_config():
         'channels': {},  # id -> name mapping
         'enabled': True
     }
-    if os.path.exists(CONFIG_PATH):
+    
+    db = get_mongo_db()
+    if db:
+        try:
+            doc = db.config.find_one({'key': 'main'})
+            if doc and 'value' in doc:
+                defaults.update(doc['value'])
+        except Exception as e:
+            logger.error(f"DB load config error: {e}")
+    elif os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r') as f:
                 defaults.update(json.load(f))
@@ -87,8 +143,19 @@ def load_config():
     return defaults
 
 def save_config(config):
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(config, f, indent=2)
+    db = get_mongo_db()
+    if db:
+        try:
+            db.config.update_one(
+                {'key': 'main'},
+                {'$set': {'key': 'main', 'value': config}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"DB save config error: {e}")
+    else:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(config, f, indent=2)
 
 # ============== CONTENT GROUPS ==============
 """
@@ -111,7 +178,16 @@ Content Group Structure:
 """
 
 def load_groups():
-    """Load content groups"""
+    """Load content groups from database or file"""
+    db = get_mongo_db()
+    if db:
+        try:
+            docs = list(db.content_groups.find({}, {'_id': 0}))
+            return [doc['data'] for doc in docs if 'data' in doc]
+        except Exception as e:
+            logger.error(f"DB load groups error: {e}")
+            return []
+    
     if os.path.exists(GROUPS_PATH):
         try:
             with open(GROUPS_PATH, 'r') as f:
@@ -120,9 +196,19 @@ def load_groups():
     return []
 
 def save_groups(groups):
-    """Save content groups"""
-    with open(GROUPS_PATH, 'w') as f:
-        json.dump(groups, f, indent=2)
+    """Save content groups to database or file"""
+    db = get_mongo_db()
+    if db:
+        try:
+            # Delete all and reinsert
+            db.content_groups.delete_many({})
+            for g in groups:
+                db.content_groups.insert_one({'id': g['id'], 'data': g})
+        except Exception as e:
+            logger.error(f"DB save groups error: {e}")
+    else:
+        with open(GROUPS_PATH, 'w') as f:
+            json.dump(groups, f, indent=2)
 
 def get_group(group_id):
     """Get a specific group by ID"""
@@ -168,17 +254,20 @@ def delete_group(group_id):
     groups = [g for g in groups if g['id'] != group_id]
     save_groups(groups)
 
-def add_content_to_group(group_id, file_path, caption=''):
-    """Add content to a group"""
+def add_content_to_group(group_id, file_path=None, caption='', content_type='file', text_content=''):
+    """Add content to a group. Supports: file (photo/video), text, url"""
     groups = load_groups()
     for g in groups:
         if g['id'] == group_id:
-            g['content'].append({
+            content_item = {
                 'id': str(uuid.uuid4())[:8],
+                'type': content_type,  # 'file', 'text', 'url'
                 'file_path': file_path,
+                'text_content': text_content,
                 'caption': caption,
                 'added_at': datetime.now().isoformat()
-            })
+            }
+            g['content'].append(content_item)
             save_groups(groups)
             return True
     return False
@@ -271,14 +360,19 @@ async def async_verify_2fa(password):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
-async def async_post_to_channels(session_file, channel_ids, file_path, caption):
-    """Post file to multiple channels"""
+async def async_post_to_channels(session_file, channel_ids, content_item):
+    """Post content to multiple channels. Supports file, text, URL"""
     if not os.path.exists(session_file + '.session'):
         logger.warning(f"Session file not found: {session_file}")
         return 0
     
     client = TelegramClient(session_file, API_ID, API_HASH)
     posted = 0
+    
+    content_type = content_item.get('type', 'file')
+    file_path = content_item.get('file_path')
+    text_content = content_item.get('text_content', '')
+    caption = content_item.get('caption', '')
     
     try:
         await client.connect()
@@ -295,7 +389,18 @@ async def async_post_to_channels(session_file, channel_ids, file_path, caption):
                 channel = channel_id
             
             try:
-                await client.send_file(channel, file_path, caption=caption)
+                if content_type == 'file' and file_path and os.path.exists(file_path):
+                    await client.send_file(channel, file_path, caption=caption)
+                elif content_type in ('text', 'url'):
+                    # Send text message (can include URLs)
+                    message_text = text_content
+                    if caption:
+                        message_text += f"\n\n{caption}"
+                    await client.send_message(channel, message_text)
+                else:
+                    logger.warning(f"Unknown content type: {content_type}")
+                    continue
+                    
                 logger.info(f"📤 Sent to {channel}")
                 posted += 1
             except Exception as e:
@@ -345,7 +450,7 @@ def start_bot_receiver():
                 glist = '\n'.join([f"• {g['name']} ({len(g['content'])} items)" for g in groups]) or 'No groups yet'
                 bot.reply_to(message, f"""🤖 *Zerohook Bot*
 
-📸 Send photos/videos to add content
+📸 Send photos/videos/text to add content
 
 📋 *Your Groups:*
 {glist}
@@ -353,6 +458,7 @@ def start_bot_receiver():
 📝 *Commands:*
 /groups - List all groups
 /newgroup NAME - Create group
+/addtext GROUP\\_ID Your text here - Add text content
 /delete GROUP\\_ID CONTENT\\_ID - Delete content
 /status - Check status
 
@@ -418,6 +524,8 @@ def start_bot_receiver():
                 total_content = sum(len(g['content']) for g in groups)
                 total_channels = len(set(ch for g in groups for ch in g['channels']))
                 
+                db_status = "🟢 MongoDB" if get_mongo_db() else "📁 JSON files"
+                
                 text = f"""📊 *Bot Status*
 
 📦 Groups: {len(groups)} ({active} active)
@@ -425,9 +533,38 @@ def start_bot_receiver():
 📢 Total channels: {total_channels}
 ⏰ Scheduler: {'🟢' if scheduler_running else '🔴'}
 🤖 Bot: {'🟢' if bot_running else '🔴'}
+💾 Storage: {db_status}
 
 🌐 Manage at: https://zerohookbot.onrender.com"""
                 bot.reply_to(message, text, parse_mode='Markdown')
+            
+            @bot.message_handler(commands=['addtext'])
+            def add_text_cmd(message):
+                """Add text content directly to a group: /addtext GROUP_ID Your text here"""
+                if not is_owner(message):
+                    return
+                
+                parts = message.text.split(maxsplit=2)
+                if len(parts) < 3:
+                    bot.reply_to(message, "❌ Usage: /addtext GROUP\\_ID Your text or URL here", parse_mode='Markdown')
+                    return
+                
+                group_id = parts[1]
+                text_content = parts[2]
+                
+                group = get_group(group_id)
+                if not group:
+                    bot.reply_to(message, f"❌ Group `{group_id}` not found", parse_mode='Markdown')
+                    return
+                
+                # Detect if it's a URL
+                content_type = 'url' if text_content.startswith(('http://', 'https://')) else 'text'
+                
+                if add_content_to_group(group_id, content_type=content_type, text_content=text_content):
+                    emoji = "🔗" if content_type == 'url' else "📝"
+                    bot.reply_to(message, f"✅ {emoji} Added to *{group['name']}*\n📦 {len(group['content'])+1} items in group", parse_mode='Markdown')
+                else:
+                    bot.reply_to(message, "❌ Error adding content")
             
             @bot.message_handler(content_types=['photo'])
             def handle_photo(message):
@@ -453,6 +590,7 @@ def start_bot_receiver():
                     # Save pending content
                     user_id = message.from_user.id
                     pending_content[user_id] = {
+                        'type': 'file',
                         'file_path': filepath,
                         'caption': message.caption or ''
                     }
@@ -493,6 +631,7 @@ def start_bot_receiver():
                     
                     user_id = message.from_user.id
                     pending_content[user_id] = {
+                        'type': 'file',
                         'file_path': filepath,
                         'caption': message.caption or ''
                     }
@@ -520,12 +659,22 @@ def start_bot_receiver():
                     bot.answer_callback_query(call.id, "❌ Content expired, send again")
                     return
                 
-                if add_content_to_group(group_id, content['file_path'], content['caption']):
+                success = add_content_to_group(
+                    group_id, 
+                    file_path=content.get('file_path'),
+                    caption=content.get('caption', ''),
+                    content_type=content.get('type', 'file'),
+                    text_content=content.get('text_content', '')
+                )
+                
+                if success:
                     group = get_group(group_id)
                     del pending_content[user_id]
                     bot.answer_callback_query(call.id, f"✅ Added to {group['name']}")
+                    
+                    content_desc = "📸 Media" if content.get('type') == 'file' else "📝 Text"
                     bot.edit_message_text(
-                        f"✅ Added to *{group['name']}*\n📸 {len(group['content'])} items in group",
+                        f"✅ Added to *{group['name']}*\n{content_desc} | {len(group['content'])} items in group",
                         call.message.chat.id,
                         call.message.message_id,
                         parse_mode='Markdown'
@@ -533,10 +682,53 @@ def start_bot_receiver():
                 else:
                     bot.answer_callback_query(call.id, "❌ Error adding")
             
+            @bot.message_handler(content_types=['text'])
+            def handle_text(message):
+                """Handle plain text messages (not commands)"""
+                if not is_owner(message):
+                    return
+                
+                # Skip commands
+                if message.text.startswith('/'):
+                    return
+                
+                text = message.text.strip()
+                if not text:
+                    return
+                
+                # Show group selection for text content
+                groups = load_groups()
+                if not groups:
+                    group = create_group("Default")
+                    groups = [group]
+                
+                # Detect content type
+                content_type = 'url' if text.startswith(('http://', 'https://')) else 'text'
+                
+                user_id = message.from_user.id
+                pending_content[user_id] = {
+                    'type': content_type,
+                    'text_content': text,
+                    'caption': ''
+                }
+                
+                emoji = "🔗 URL" if content_type == 'url' else "📝 Text"
+                markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+                for g in groups:
+                    btn = telebot.types.InlineKeyboardButton(
+                        f"📁 {g['name']} ({len(g['content'])})",
+                        callback_data=f"addto:{g['id']}"
+                    )
+                    markup.add(btn)
+                
+                preview = text[:50] + "..." if len(text) > 50 else text
+                bot.reply_to(message, f"{emoji} received!\n`{preview}`\n\nSelect a group:", reply_markup=markup, parse_mode='Markdown')
+                logger.info(f"📝 Text from {message.from_user.username}")
+            
             @bot.message_handler(func=lambda m: True)
             def other(message):
                 if is_owner(message):
-                    bot.reply_to(message, "📸 Send a photo or video!\n/help for commands")
+                    bot.reply_to(message, "📸 Send photo, video, or text!\n/help for commands")
             
             bot_running = True
             logger.info("🤖 Bot receiver started!")
@@ -629,14 +821,20 @@ def run_scheduler():
                 idx = group.get('current_content_index', 0) % len(group['content'])
                 content = group['content'][idx]
                 
-                logger.info(f"📤 Posting from {group['name']}: {os.path.basename(content['file_path'])}")
+                # Log based on content type
+                content_type = content.get('type', 'file')
+                if content_type == 'file':
+                    content_desc = os.path.basename(content.get('file_path', 'unknown'))
+                else:
+                    content_desc = content.get('text_content', '')[:30] + "..."
+                
+                logger.info(f"📤 Posting from {group['name']}: {content_desc}")
                 
                 try:
                     posted = run_async(async_post_to_channels(
                         session_file,
                         group['channels'],
-                        content['file_path'],
-                        content.get('caption', '')
+                        content  # Pass the whole content item now
                     ))
                     
                     if posted > 0:
@@ -1250,6 +1448,7 @@ def settings():
         <div class="grid">
             <div class="stat"><h4>{'🟢' if scheduler_running else '🔴'}</h4><p>Scheduler</p></div>
             <div class="stat"><h4>{'🟢' if bot_running else '🔴'}</h4><p>Bot</p></div>
+            <div class="stat"><h4>{'🟢 MongoDB' if get_mongo_db() else '📁 JSON'}</h4><p>Storage</p></div>
         </div>
     </div>
     '''
@@ -1264,16 +1463,36 @@ def settings_save():
     save_config(config)
     return redirect(url_for('settings', success='Saved!'))
 
+# ============== KEEP ALIVE (Anti-Sleep) ==============
+def keep_alive():
+    """Ping the server every 5 minutes to prevent Render free tier from sleeping"""
+    while True:
+        try:
+            time.sleep(300)  # 5 minutes
+            response = requests.get(APP_URL, timeout=30)
+            logger.debug(f"🏓 Keep-alive ping: {response.status_code}")
+        except Exception as e:
+            logger.debug(f"Keep-alive error: {e}")
+
 # ============== STARTUP ==============
 def start_services():
+    # Initialize MongoDB
+    try:
+        init_database()
+    except Exception as e:
+        logger.error(f"Database init error: {e}")
+    
     get_telethon_loop()
     threading.Thread(target=run_scheduler, daemon=True).start()
     logger.info("📅 Scheduler started")
     threading.Thread(target=start_bot_receiver, daemon=True).start()
     logger.info("🤖 Bot thread started")
+    threading.Thread(target=keep_alive, daemon=True).start()
+    logger.info("🏓 Keep-alive thread started")
 
 if __name__ == '__main__':
     start_services()
     port = int(os.getenv('PORT', 10000))
     logger.info(f"🌐 http://localhost:{port}")
+    logger.info(f"💾 Storage: {'MongoDB' if get_mongo_db() else 'JSON files'}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
