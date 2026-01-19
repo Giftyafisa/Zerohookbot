@@ -359,6 +359,10 @@ def do_post(post, config, session_name):
             logger.warning(f"File not found: {file_path}")
             return False
         
+        # Create event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         # Use sync client for posting
         with SyncTelegramClient(session_file, API_ID, API_HASH) as client:
             if not client.is_user_authorized():
@@ -571,7 +575,11 @@ def send_code():
     session_file = os.path.join(SESSION_PATH, f'session_{phone.replace("+", "")}')
     
     try:
-        # Use sync client - simpler and more reliable
+        # Create event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Use sync client
         client = SyncTelegramClient(session_file, API_ID, API_HASH)
         client.connect()
         
